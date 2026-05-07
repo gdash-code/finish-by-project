@@ -101,65 +101,77 @@ export default function FinishBy() {
   };
 
   const addBook = async (bookData) => {
-    const today = new Date();
-    const todayISO = today.toISOString().split("T")[0];
-    const totalPagesValue = bookData.totalPages || 0;
-    const sanitizedPagesRead = Math.min(
-      Math.max(bookData.pagesRead || 0, 0),
-      totalPagesValue,
-    );
-
-    const baseBook = {
-      id: Date.now().toString(),
-      ...bookData,
-      totalPages: totalPagesValue,
-      pagesRead: sanitizedPagesRead,
-      startDate: todayISO,
-      lastRead: todayISO,
-      missedDays: 0,
-      readingSessions: [],
-    };
-
-    const commitment = getCommitmentDetails(baseBook.commitmentLevel);
-    let dailyPlan = [];
     try {
-      const planningInput = {
-        id: baseBook.id,
-        title: baseBook.title,
-        totalPages: baseBook.totalPages,
-        pagesRead: baseBook.pagesRead,
-        startDate: today,
-        targetEndDate: new Date(baseBook.targetDate),
-        readingDaysPerWeek: commitment.days,
-        readingSpeed: baseBook.readingSpeed,
-        status: "active",
-        dailyPlan: [],
-        lastRecalculatedAt: today,
+      const today = new Date();
+      const todayISO = today.toISOString().split("T")[0];
+      const totalPagesValue = bookData.totalPages || 0;
+      const sanitizedPagesRead = Math.min(
+        Math.max(bookData.pagesRead || 0, 0),
+        totalPagesValue,
+      );
+
+      const baseBook = {
+        id: Date.now().toString(),
+        ...bookData,
+        totalPages: totalPagesValue,
+        pagesRead: sanitizedPagesRead,
+        startDate: todayISO,
+        lastRead: todayISO,
+        missedDays: 0,
+        readingSessions: [],
       };
-      dailyPlan = generateReadingPlan(planningInput).map((entry) => ({
-        ...entry,
-        date: entry.date.toISOString(),
-      }));
-    } catch (error) {
-      console.error("Failed to generate reading plan:", error);
-    }
 
-    const book = {
-      ...baseBook,
-      readingDaysPerWeek: commitment.days,
-      dailyPlan,
-      status: baseBook.pagesRead >= baseBook.totalPages ? "completed" : "active",
-      completedAt:
-        baseBook.pagesRead >= baseBook.totalPages ? todayISO : undefined,
-      lastRecalculatedAt: today.toISOString(),
-    };
+      const commitment = getCommitmentDetails(baseBook.commitmentLevel);
+      let dailyPlan = [];
+      try {
+        const planningInput = {
+          id: baseBook.id,
+          title: baseBook.title,
+          totalPages: baseBook.totalPages,
+          pagesRead: baseBook.pagesRead,
+          startDate: today,
+          targetEndDate: new Date(baseBook.targetDate),
+          readingDaysPerWeek: commitment.days,
+          readingSpeed: baseBook.readingSpeed,
+          status: "active",
+          dailyPlan: [],
+          lastRecalculatedAt: today,
+        };
+        dailyPlan = generateReadingPlan(planningInput).map((entry) => ({
+          ...entry,
+          date: entry.date.toISOString(),
+        }));
+      } catch (error) {
+        console.error("Failed to generate reading plan:", error);
+      }
 
-    try {
+      const book = {
+        ...baseBook,
+        readingDaysPerWeek: commitment.days,
+        dailyPlan,
+        status: baseBook.pagesRead >= baseBook.totalPages ? "completed" : "active",
+        completedAt:
+          baseBook.pagesRead >= baseBook.totalPages ? todayISO : undefined,
+        lastRecalculatedAt: today.toISOString(),
+      };
+
+      // Debug log
+      console.log("Saving book:", book);
+
       await window.storage.set(`book:${book.id}`, JSON.stringify(book));
-      setBooks([...books, book]);
-      setShowAddBook(false);
+      
+      // Verify the save was successful
+      const saved = await window.storage.get(`book:${book.id}`);
+      if (saved) {
+        console.log("Book saved successfully");
+        setBooks([...books, book]);
+        setShowAddBook(false);
+      } else {
+        console.error("Book was not saved to storage");
+      }
     } catch (error) {
       console.error("Failed to save book:", error);
+      alert("Failed to save book. Please try again.");
     }
   };
 
@@ -660,17 +672,42 @@ function AddBookForm({ onAdd, onCancel }) {
     commitmentLevel: "balanced",
     readingSpeed: "moderate",
   });
+  const [error, setError] = useState("");
 
   const handleSubmit = (e) => {
     e.preventDefault();
-    const pagesRead = formData.pagesRead ? parseInt(formData.pagesRead) : 0;
-    if (formData.title && formData.totalPages && formData.targetDate) {
-      onAdd({
-        ...formData,
-        totalPages: parseInt(formData.totalPages),
-        pagesRead: pagesRead,
-      });
+    setError("");
+    
+    // Validate form data
+    if (!formData.title || !formData.totalPages || !formData.targetDate) {
+      setError("Please fill in all required fields (title, pages, and date)");
+      console.error('Missing required fields:', { title: formData.title, totalPages: formData.totalPages, targetDate: formData.targetDate });
+      return;
     }
+
+    const totalPages = parseInt(formData.totalPages, 10);
+    if (Number.isNaN(totalPages) || totalPages <= 0) {
+      setError("Total pages must be a valid number greater than 0");
+      return;
+    }
+
+    const pagesRead = formData.pagesRead ? parseInt(formData.pagesRead, 10) : 0;
+    if (Number.isNaN(pagesRead) || pagesRead < 0) {
+      setError("Pages read must be a valid number");
+      return;
+    }
+
+    // Ensure pagesRead doesn't exceed totalPages
+    if (pagesRead > totalPages) {
+      setError('Pages read cannot exceed total pages');
+      return;
+    }
+
+    onAdd({
+      ...formData,
+      totalPages: totalPages,
+      pagesRead: pagesRead,
+    });
   };
 
   const getSuggestedDate = () => {
@@ -766,6 +803,12 @@ function AddBookForm({ onAdd, onCancel }) {
           Add a Book
         </h2>
 
+        {error && (
+          <div className="mb-4 p-3 bg-rose-50 border border-rose-200 rounded-lg">
+            <p className="text-sm text-rose-700">{error}</p>
+          </div>
+        )}
+
         <form onSubmit={handleSubmit} className="space-y-5">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">
@@ -806,7 +849,7 @@ function AddBookForm({ onAdd, onCancel }) {
             </label>
             <input
               type="number"
-              value={formData.pagesRead}
+              value={formData.pagesRead === "" ? "" : String(formData.pagesRead)}
               onChange={(e) => {
                 const rawValue = e.target.value;
                 if (rawValue === "") {
