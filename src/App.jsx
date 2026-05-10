@@ -144,7 +144,7 @@ export default function FinishBy() {
           pagesRead: baseBook.pagesRead,
           startDate: today,
           targetEndDate: new Date(baseBook.targetDate),
-          readingDaysPerWeek: commitment.days,
+          commitmentLevel: baseBook.commitmentLevel,
           readingSpeed: baseBook.readingSpeed,
           status: "active",
           dailyPlan: [],
@@ -815,7 +815,6 @@ function AddBookForm({ onAdd, onCancel }) {
     }
 
     const targetDate = new Date(formData.targetDate);
-    const commitment = getCommitmentDetails(formData.commitmentLevel);
 
     const previewBook = {
       id: "preview",
@@ -824,7 +823,7 @@ function AddBookForm({ onAdd, onCancel }) {
       pagesRead: pagesReadValue,
       startDate: new Date(),
       targetEndDate: targetDate,
-      readingDaysPerWeek: commitment.days,
+      commitmentLevel: formData.commitmentLevel,
       readingSpeed: formData.readingSpeed,
       status: "active",
       dailyPlan: [],
