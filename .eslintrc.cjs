@@ -17,4 +17,14 @@ module.exports = {
       { allowConstantExport: true },
     ],
   },
+  overrides: [
+    {
+      files: ['**/*.test.{js,jsx}', 'src/test/**/*.{js,jsx}'],
+      env: { node: true, browser: true },
+      globals: { vi: 'readonly' },
+      rules: {
+        'no-unused-vars': ['error', { argsIgnorePattern: '^_|^(key|value|prefix)$' }],
+      },
+    },
+  ],
 }

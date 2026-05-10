@@ -77,10 +77,23 @@ export default function FinishBy() {
   const [showAddBook, setShowAddBook] = useState(false);
   const [loading, setLoading] = useState(true);
   const [notifications, setNotifications] = useState(true);
+  const [isUnfolded, setIsUnfolded] = useState(false);
 
   useEffect(() => {
     loadBooks();
   }, []);
+
+  useEffect(() => {
+    if (isUnfolded) return;
+    const handleKey = (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        setIsUnfolded(true);
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [isUnfolded]);
 
   const loadBooks = async () => {
     try {
@@ -94,7 +107,7 @@ export default function FinishBy() {
         setBooks(loadedBooks);
       }
     } catch (error) {
-      console.log("No existing books");
+      console.error("Failed to load books:", error);
     } finally {
       setLoading(false);
     }
@@ -155,20 +168,9 @@ export default function FinishBy() {
         lastRecalculatedAt: today.toISOString(),
       };
 
-      // Debug log
-      console.log("Saving book:", book);
-
       await window.storage.set(`book:${book.id}`, JSON.stringify(book));
-      
-      // Verify the save was successful
-      const saved = await window.storage.get(`book:${book.id}`);
-      if (saved) {
-        console.log("Book saved successfully");
-        setBooks([...books, book]);
-        setShowAddBook(false);
-      } else {
-        console.error("Book was not saved to storage");
-      }
+      setBooks([...books, book]);
+      setShowAddBook(false);
     } catch (error) {
       console.error("Failed to save book:", error);
       alert("Failed to save book. Please try again.");
@@ -224,84 +226,160 @@ export default function FinishBy() {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-stone-100 flex items-center justify-center">
-        <div className="text-slate-600">Loading...</div>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-stone-100">
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@300;400;600&family=Work+Sans:wght@400;500;600&display=swap');
-        
+
         * {
           font-family: 'Work Sans', sans-serif;
         }
-        
+
         .serif {
           font-family: 'Crimson Pro', serif;
         }
-        
+
         @keyframes fadeInUp {
-          from {
-            opacity: 0;
-            transform: translateY(20px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
+          from { opacity: 0; transform: translateY(20px); }
+          to { opacity: 1; transform: translateY(0); }
         }
-        
+
         @keyframes slideIn {
-          from {
-            opacity: 0;
-            transform: translateX(-20px);
-          }
-          to {
-            opacity: 1;
-            transform: translateX(0);
-          }
+          from { opacity: 0; transform: translateX(-20px); }
+          to { opacity: 1; transform: translateX(0); }
         }
-        
+
         @keyframes pulse {
-          0%, 100% {
-            opacity: 1;
-          }
-          50% {
-            opacity: 0.8;
-          }
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.8; }
         }
-        
-        .animate-fade-in-up {
-          animation: fadeInUp 0.6s ease-out;
+
+        @keyframes paperBallFloat {
+          0%, 100% { transform: scale(1) rotate(0deg); }
+          50% { transform: scale(1.04) rotate(1.5deg); }
         }
-        
-        .animate-slide-in {
-          animation: slideIn 0.4s ease-out;
+
+        @keyframes splashRise {
+          from { opacity: 0; transform: translateY(24px); }
+          to { opacity: 1; transform: translateY(0); }
         }
-        
-        .animate-pulse-slow {
-          animation: pulse 2s ease-in-out infinite;
+
+        .animate-fade-in-up { animation: fadeInUp 0.6s ease-out; }
+        .animate-slide-in { animation: slideIn 0.4s ease-out; }
+        .animate-pulse-slow { animation: pulse 2s ease-in-out infinite; }
+
+        .paper-ball-float { animation: paperBallFloat 5s ease-in-out infinite; }
+        .splash-rise { animation: splashRise 0.8s 0.3s ease-out both; }
+
+        .splash-overlay {
+          transition: opacity 900ms ease, transform 900ms ease, filter 900ms ease;
         }
-        
+
+        .paper-ball-button {
+          transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .paper-ball-button:hover { transform: scale(1.04); }
+        .paper-ball-button:active { transform: scale(0.96); }
+
         .book-card {
           transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
-        
+
         .book-card:hover {
           transform: translateY(-4px);
           box-shadow: 0 20px 40px rgba(0, 0, 0, 0.08);
         }
-        
+
         .progress-bar {
           transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
         }
       `}</style>
 
+      {/* Paper-ball splash overlay */}
+      <div
+        className={`splash-overlay fixed inset-0 z-50 flex flex-col items-center justify-center px-6 bg-gradient-to-br from-stone-100 via-stone-50 to-stone-200 ${
+          isUnfolded
+            ? "opacity-0 scale-110 pointer-events-none"
+            : "opacity-100"
+        }`}
+        style={{ filter: isUnfolded ? "blur(8px)" : "blur(0px)" }}
+        onClick={() => setIsUnfolded(true)}
+        role="button"
+        tabIndex={isUnfolded ? -1 : 0}
+        aria-label="Reveal Finish By"
+      >
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsUnfolded(true);
+          }}
+          className="paper-ball-button group relative cursor-pointer focus:outline-none"
+          aria-label="Unfold paper to reveal Finish By"
+        >
+          <div className="paper-ball-float relative w-64 h-64 md:w-80 md:h-80 flex items-center justify-center">
+            <svg
+              viewBox="0 0 200 200"
+              className="w-full h-full drop-shadow-[0_20px_40px_rgba(15,23,42,0.12)]"
+            >
+              <defs>
+                <filter id="paper-crumple" x="-20%" y="-20%" width="140%" height="140%">
+                  <feTurbulence
+                    type="fractalNoise"
+                    baseFrequency="0.04"
+                    numOctaves="5"
+                    result="noise"
+                  />
+                  <feDisplacementMap in="SourceGraphic" in2="noise" scale="40" />
+                </filter>
+              </defs>
+              <path
+                d="M100,20 C130,20 180,60 180,100 C180,140 140,180 100,180 C60,180 20,140 20,100 C20,60 70,20 100,20"
+                fill="#FFFFFF"
+                filter="url(#paper-crumple)"
+              />
+              <path
+                d="M100,40 C140,40 160,80 160,100 C160,120 120,160 100,160 C80,160 40,120 40,100 C40,80 60,40 100,40"
+                fill="none"
+                stroke="rgba(15,23,42,0.35)"
+                strokeWidth="1.5"
+                strokeDasharray="4 4"
+                filter="url(#paper-crumple)"
+              />
+              <path
+                d="M80,80 Q100,60 120,80 T120,120 Q100,140 80,120 T80,80"
+                fill="none"
+                stroke="rgba(15,23,42,0.2)"
+                strokeWidth="1"
+                filter="url(#paper-crumple)"
+              />
+            </svg>
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <span className="text-slate-700/60 font-medium tracking-[0.3em] text-[10px] uppercase group-hover:text-slate-800 transition-colors">
+                Unfold
+              </span>
+            </div>
+          </div>
+        </button>
+
+        <div className="splash-rise mt-12 text-center max-w-md">
+          <h1 className="text-6xl md:text-7xl serif font-light tracking-tight text-slate-800 mb-4">
+            Finish By
+          </h1>
+          <p className="text-slate-500 text-base md:text-lg mb-6 font-light">
+            For people who buy books but don&apos;t finish them
+          </p>
+          <p className="text-slate-400 font-medium tracking-[0.3em] text-[10px] uppercase">
+            Tap the paper to begin
+          </p>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="min-h-screen flex items-center justify-center">
+          <div className="text-slate-600">Loading...</div>
+        </div>
+      ) : (
       <div className="max-w-4xl mx-auto px-6 py-12">
         {/* Header */}
         <header className="mb-16 text-center animate-fade-in-up">
@@ -391,6 +469,7 @@ export default function FinishBy() {
           <AddBookForm onAdd={addBook} onCancel={() => setShowAddBook(false)} />
         )}
       </div>
+      )}
     </div>
   );
 }
@@ -678,10 +757,8 @@ function AddBookForm({ onAdd, onCancel }) {
     e.preventDefault();
     setError("");
     
-    // Validate form data
     if (!formData.title || !formData.totalPages || !formData.targetDate) {
       setError("Please fill in all required fields (title, pages, and date)");
-      console.error('Missing required fields:', { title: formData.title, totalPages: formData.totalPages, targetDate: formData.targetDate });
       return;
     }
 
