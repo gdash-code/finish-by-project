@@ -1,6 +1,17 @@
 import { useState, useEffect, useRef } from "react";
 import PropTypes from "prop-types";
-import { BookOpen, Check, Plus, X, Bell, Search } from "lucide-react";
+import {
+  BookOpen,
+  Check,
+  Plus,
+  X,
+  Bell,
+  Search,
+  Pencil,
+  Download,
+  Upload,
+  AlertTriangle,
+} from "lucide-react";
 
 const storage = {
   set: async (key, value) => {
@@ -60,6 +71,8 @@ const NOTIFICATION_HOUR = 19; // 7 PM evening reminder
 export default function FinishBy() {
   const [books, setBooks] = useState([]);
   const [showAddBook, setShowAddBook] = useState(false);
+  const [editingBook, setEditingBook] = useState(null);
+  const [importMessage, setImportMessage] = useState("");
   const [loading, setLoading] = useState(true);
   const [notifications, setNotifications] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -201,6 +214,91 @@ export default function FinishBy() {
     } catch (error) {
       console.error("Failed to save book:", error);
       alert("Failed to save book. Please try again.");
+    }
+  };
+
+  const editBook = async (bookId, updates) => {
+    const totalPages = Math.max(1, updates.totalPages || 0);
+    const pagesRead = Math.min(Math.max(updates.pagesRead || 0, 0), totalPages);
+    const updatedBooks = books.map((b) =>
+      b.id === bookId
+        ? {
+            ...b,
+            title: updates.title,
+            totalPages,
+            pagesRead,
+            targetDate: updates.targetDate,
+            completedAt:
+              pagesRead >= totalPages
+                ? b.completedAt || todayISO()
+                : undefined,
+          }
+        : b,
+    );
+    setBooks(updatedBooks);
+    const updated = updatedBooks.find((b) => b.id === bookId);
+    try {
+      await window.storage.set(`book:${bookId}`, JSON.stringify(updated));
+    } catch (error) {
+      console.error("Failed to save book:", error);
+    }
+    setEditingBook(null);
+  };
+
+  const exportBooks = () => {
+    const data = JSON.stringify({ version: 1, books }, null, 2);
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `finishby-${new Date().toISOString().split("T")[0]}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const importBooks = async (file) => {
+    setImportMessage("");
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const incoming = Array.isArray(parsed) ? parsed : parsed?.books;
+      if (!Array.isArray(incoming)) {
+        throw new Error("File doesn't look like a Finish By export.");
+      }
+      const valid = incoming.filter(
+        (b) =>
+          b &&
+          typeof b.id === "string" &&
+          typeof b.title === "string" &&
+          typeof b.totalPages === "number" &&
+          typeof b.pagesRead === "number" &&
+          typeof b.targetDate === "string",
+      );
+      if (valid.length === 0) {
+        throw new Error("No valid books found in that file.");
+      }
+      const existingIds = new Set(books.map((b) => b.id));
+      const merged = [...books];
+      let added = 0;
+      for (const book of valid) {
+        if (existingIds.has(book.id)) continue;
+        merged.push(book);
+        await window.storage.set(`book:${book.id}`, JSON.stringify(book));
+        added += 1;
+      }
+      setBooks(merged);
+      setImportMessage(
+        added === 0
+          ? "Nothing new to import — those books are already here."
+          : `Imported ${added} book${added === 1 ? "" : "s"}.`,
+      );
+      setTimeout(() => setImportMessage(""), 4000);
+    } catch (error) {
+      console.error("Import failed:", error);
+      setImportMessage(`Import failed: ${error.message}`);
+      setTimeout(() => setImportMessage(""), 5000);
     }
   };
 
@@ -431,6 +529,36 @@ export default function FinishBy() {
               />
             </button>
           </div>
+
+          {/* Data tools: export / import JSON */}
+          <div className="mt-4 flex justify-center items-center gap-2 text-xs">
+            <button
+              onClick={exportBooks}
+              disabled={books.length === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-slate-500 hover:text-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Export
+            </button>
+            <span className="text-slate-300">·</span>
+            <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-slate-500 hover:text-slate-800 cursor-pointer transition-colors">
+              <Upload className="w-3.5 h-3.5" />
+              Import
+              <input
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) importBooks(file);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+          </div>
+          {importMessage && (
+            <p className="mt-2 text-xs text-slate-500">{importMessage}</p>
+          )}
         </header>
 
         {/* Empty State */}
@@ -477,6 +605,7 @@ export default function FinishBy() {
                   book={book}
                   onUpdate={updateProgress}
                   onDelete={deleteBook}
+                  onEdit={setEditingBook}
                   delay={index * 0.1}
                 />
               ))}
@@ -488,13 +617,22 @@ export default function FinishBy() {
         {showAddBook && (
           <AddBookForm onAdd={addBook} onCancel={() => setShowAddBook(false)} />
         )}
+
+        {/* Edit Book Modal */}
+        {editingBook && (
+          <AddBookForm
+            existingBook={editingBook}
+            onAdd={(updates) => editBook(editingBook.id, updates)}
+            onCancel={() => setEditingBook(null)}
+          />
+        )}
       </div>
       )}
     </div>
   );
 }
 
-function BookCard({ book, onUpdate, onDelete, delay }) {
+function BookCard({ book, onUpdate, onDelete, onEdit, delay }) {
   const [isEditing, setIsEditing] = useState(false);
   const [endingPageInput, setEndingPageInput] = useState(String(book.pagesRead));
 
@@ -506,6 +644,7 @@ function BookCard({ book, onUpdate, onDelete, delay }) {
   const progress = (book.pagesRead / book.totalPages) * 100;
   const target = dailyTarget(book);
   const daysLeft = daysUntil(book.targetDate);
+  const isPastDeadline = !isComplete && daysLeft < 0;
 
   const sanitizePageInput = (value) => {
     if (value === "") {
@@ -545,13 +684,22 @@ function BookCard({ book, onUpdate, onDelete, delay }) {
             {book.pagesRead} of {book.totalPages} pages
           </p>
         </div>
-        <button
-          onClick={() => onDelete(book.id)}
-          className="text-slate-300 hover:text-slate-600 transition-colors ml-3"
-          aria-label="Delete book"
-        >
-          <X className="w-5 h-5" />
-        </button>
+        <div className="flex items-center gap-1 ml-3">
+          <button
+            onClick={() => onEdit(book)}
+            className="p-1 text-slate-300 hover:text-slate-600 transition-colors"
+            aria-label="Edit book"
+          >
+            <Pencil className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => onDelete(book.id)}
+            className="p-1 text-slate-300 hover:text-slate-600 transition-colors"
+            aria-label="Delete book"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
       </div>
 
       {isComplete ? (
@@ -560,6 +708,23 @@ function BookCard({ book, onUpdate, onDelete, delay }) {
             You finished.
           </p>
           <p className="text-sm text-slate-500">Nice work.</p>
+        </div>
+      ) : isPastDeadline ? (
+        <div className="text-center py-4">
+          <AlertTriangle className="w-6 h-6 text-amber-500 mx-auto mb-2" />
+          <p className="text-base serif font-semibold text-slate-800 mb-1">
+            Deadline passed
+          </p>
+          <p className="text-xs text-slate-500 mb-4">
+            {Math.abs(daysLeft)} day{Math.abs(daysLeft) === 1 ? "" : "s"} ago ·{" "}
+            {book.totalPages - book.pagesRead} pages still to go
+          </p>
+          <button
+            onClick={() => onEdit(book)}
+            className="px-5 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors text-sm font-medium"
+          >
+            Extend deadline
+          </button>
         </div>
       ) : (
         <>
@@ -639,6 +804,7 @@ BookCard.propTypes = {
   }).isRequired,
   onUpdate: PropTypes.func.isRequired,
   onDelete: PropTypes.func.isRequired,
+  onEdit: PropTypes.func.isRequired,
   delay: PropTypes.number,
 };
 
@@ -755,12 +921,13 @@ BookSearch.propTypes = {
   onPick: PropTypes.func.isRequired,
 };
 
-function AddBookForm({ onAdd, onCancel }) {
+function AddBookForm({ onAdd, onCancel, existingBook }) {
+  const isEdit = !!existingBook;
   const [formData, setFormData] = useState({
-    title: "",
-    totalPages: "",
-    pagesRead: "",
-    targetDate: "",
+    title: existingBook?.title || "",
+    totalPages: existingBook ? String(existingBook.totalPages) : "",
+    pagesRead: existingBook ? String(existingBook.pagesRead) : "",
+    targetDate: existingBook?.targetDate || "",
   });
   const [error, setError] = useState("");
 
@@ -813,7 +980,7 @@ function AddBookForm({ onAdd, onCancel }) {
     <div className="fixed inset-0 bg-black/20 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in-up">
       <div className="bg-white rounded-2xl p-8 max-w-md w-full shadow-2xl max-h-[90vh] overflow-y-auto">
         <h2 className="text-3xl serif font-semibold text-slate-800 mb-6">
-          Add a Book
+          {isEdit ? "Edit Book" : "Add a Book"}
         </h2>
 
         {error && (
@@ -823,15 +990,17 @@ function AddBookForm({ onAdd, onCancel }) {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-5">
-          <BookSearch
-            onPick={(book) =>
-              setFormData((f) => ({
-                ...f,
-                title: book.title,
-                totalPages: String(book.pageCount),
-              }))
-            }
-          />
+          {!isEdit && (
+            <BookSearch
+              onPick={(book) =>
+                setFormData((f) => ({
+                  ...f,
+                  title: book.title,
+                  totalPages: String(book.pageCount),
+                }))
+              }
+            />
+          )}
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">
@@ -914,7 +1083,7 @@ function AddBookForm({ onAdd, onCancel }) {
                 }
                 className="w-full px-4 py-3 bg-white text-slate-800 focus:outline-none text-base text-center"
                 required
-                min={new Date().toISOString().split("T")[0]}
+                min={isEdit ? undefined : new Date().toISOString().split("T")[0]}
               />
             </div>
           </div>
@@ -949,7 +1118,7 @@ function AddBookForm({ onAdd, onCancel }) {
               type="submit"
               className="flex-1 py-3 bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors font-medium"
             >
-              Add Book
+              {isEdit ? "Save Changes" : "Add Book"}
             </button>
           </div>
         </form>
@@ -961,4 +1130,5 @@ function AddBookForm({ onAdd, onCancel }) {
 AddBookForm.propTypes = {
   onAdd: PropTypes.func.isRequired,
   onCancel: PropTypes.func.isRequired,
+  existingBook: PropTypes.object,
 };

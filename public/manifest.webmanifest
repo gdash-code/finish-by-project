@@ -1,0 +1,19 @@
+{
+  "name": "Finish By",
+  "short_name": "Finish By",
+  "description": "Guilt-free reading accountability for books with deadlines",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F2EFE8",
+  "theme_color": "#0F172A",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
