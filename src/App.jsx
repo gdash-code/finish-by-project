@@ -1,18 +1,18 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import PropTypes from "prop-types";
 import {
   BookOpen,
-  Calendar,
-  TrendingUp,
   Check,
   Plus,
   X,
-  Clock,
   Bell,
+  Search,
+  Pencil,
+  Download,
+  Upload,
+  AlertTriangle,
 } from "lucide-react";
-import { generateReadingPlan } from "./lib/readingPlan";
 
-// Simple storage implementation using localStorage
 const storage = {
   set: async (key, value) => {
     localStorage.setItem(key, value);
@@ -28,15 +28,12 @@ const storage = {
     const keys = [];
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (key.startsWith(prefix)) {
-        keys.push(key);
-      }
+      if (key.startsWith(prefix)) keys.push(key);
     }
     return { keys };
   },
 };
 
-// Attach storage to window if not already there
 if (typeof window !== "undefined" && !window.storage) {
   window.storage = storage;
 }
@@ -49,38 +46,127 @@ const normalizeDate = (value) => {
   return date;
 };
 
-const differenceInDays = (a, b) =>
-  Math.round((normalizeDate(a).getTime() - normalizeDate(b).getTime()) / DAY_IN_MS);
-const formatShortDate = (value) =>
-  new Date(value).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+const todayISO = () => new Date().toISOString().split("T")[0];
 
-const COMMITMENT_DETAILS = {
-  gentle: { days: 4, description: "4 days/week • Flexible & forgiving" },
-  balanced: { days: 6, description: "6 days/week • Steady progress" },
-  intense: { days: 7, description: "Daily • Maximum momentum" },
+// Bare-bones pace math: pages remaining / days until the deadline (calendar days).
+// If the deadline is today or in the past, all remaining pages are "today's target."
+const dailyTarget = (book) => {
+  const remaining = Math.max(0, book.totalPages - book.pagesRead);
+  if (remaining === 0) return 0;
+  const today = normalizeDate(new Date());
+  const target = normalizeDate(book.targetDate);
+  const daysLeft = Math.max(1, Math.round((target - today) / DAY_IN_MS));
+  return Math.ceil(remaining / daysLeft);
 };
 
-const getCommitmentDetails = (level) =>
-  COMMITMENT_DETAILS[level] || COMMITMENT_DETAILS.balanced;
-
-const READING_SPEED_DETAILS = {
-  slow: { pagesPerDay: 15, label: "~15 pages/day" },
-  moderate: { pagesPerDay: 25, label: "~25 pages/day" },
-  fast: { pagesPerDay: 40, label: "~40 pages/day" },
+const daysUntil = (date) => {
+  const today = normalizeDate(new Date());
+  const t = normalizeDate(date);
+  return Math.round((t - today) / DAY_IN_MS);
 };
 
-const getReadingSpeedDetails = (speed) =>
-  READING_SPEED_DETAILS[speed] || READING_SPEED_DETAILS.moderate;
+const NOTIFICATION_PREF_KEY = "finishby:notifications";
+const NOTIFICATION_HOUR = 19; // 7 PM evening reminder
 
 export default function FinishBy() {
   const [books, setBooks] = useState([]);
   const [showAddBook, setShowAddBook] = useState(false);
+  const [editingBook, setEditingBook] = useState(null);
+  const [importMessage, setImportMessage] = useState("");
   const [loading, setLoading] = useState(true);
-  const [notifications, setNotifications] = useState(true);
+  const [notifications, setNotifications] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem(NOTIFICATION_PREF_KEY) === "true";
+  });
+  const [isUnfolded, setIsUnfolded] = useState(false);
+  const reminderTimerRef = useRef(null);
 
   useEffect(() => {
     loadBooks();
   }, []);
+
+  useEffect(() => {
+    if (isUnfolded) return;
+    const handleKey = (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        setIsUnfolded(true);
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [isUnfolded]);
+
+  // Daily-reminder scheduling. Only fires while a tab is open; if the tab is
+  // closed we rely on the next visit to re-schedule. Honest tradeoff for a
+  // backend-less app — documented in the toggle's helper text.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (reminderTimerRef.current) {
+      clearTimeout(reminderTimerRef.current);
+      reminderTimerRef.current = null;
+    }
+    if (!notifications) return;
+    if (typeof Notification === "undefined") return;
+    if (Notification.permission !== "granted") return;
+
+    const scheduleNext = () => {
+      const now = new Date();
+      const next = new Date(now);
+      next.setHours(NOTIFICATION_HOUR, 0, 0, 0);
+      if (next <= now) next.setDate(next.getDate() + 1);
+      const delay = next.getTime() - now.getTime();
+      reminderTimerRef.current = setTimeout(() => {
+        const active = books.find((b) => b.pagesRead < b.totalPages);
+        if (active) {
+          const target = dailyTarget(active);
+          new Notification("Time to read", {
+            body: target > 0
+              ? `${target} pages of ${active.title} today`
+              : `Pick up ${active.title}`,
+            icon: "/vite.svg",
+          });
+        }
+        scheduleNext();
+      }, delay);
+    };
+
+    scheduleNext();
+    return () => {
+      if (reminderTimerRef.current) {
+        clearTimeout(reminderTimerRef.current);
+        reminderTimerRef.current = null;
+      }
+    };
+  }, [notifications, books]);
+
+  const handleNotificationsToggle = async () => {
+    if (notifications) {
+      setNotifications(false);
+      localStorage.setItem(NOTIFICATION_PREF_KEY, "false");
+      return;
+    }
+    if (typeof Notification === "undefined") {
+      alert("This browser doesn't support notifications.");
+      return;
+    }
+    let permission = Notification.permission;
+    if (permission === "default") {
+      permission = await Notification.requestPermission();
+    }
+    if (permission !== "granted") {
+      alert(
+        "Notifications were blocked. Enable them in your browser settings to get daily reminders.",
+      );
+      return;
+    }
+    setNotifications(true);
+    localStorage.setItem(NOTIFICATION_PREF_KEY, "true");
+    new Notification("Reminders on", {
+      body: "We'll nudge you each evening to keep reading.",
+      icon: "/vite.svg",
+    });
+  };
 
   const loadBooks = async () => {
     try {
@@ -94,7 +180,7 @@ export default function FinishBy() {
         setBooks(loadedBooks);
       }
     } catch (error) {
-      console.log("No existing books");
+      console.error("Failed to load books:", error);
     } finally {
       setLoading(false);
     }
@@ -102,108 +188,141 @@ export default function FinishBy() {
 
   const addBook = async (bookData) => {
     try {
-      const today = new Date();
-      const todayISO = today.toISOString().split("T")[0];
+      const today = todayISO();
       const totalPagesValue = bookData.totalPages || 0;
       const sanitizedPagesRead = Math.min(
         Math.max(bookData.pagesRead || 0, 0),
         totalPagesValue,
       );
 
-      const baseBook = {
+      const book = {
         id: Date.now().toString(),
-        ...bookData,
+        title: bookData.title,
         totalPages: totalPagesValue,
         pagesRead: sanitizedPagesRead,
-        startDate: todayISO,
-        lastRead: todayISO,
-        missedDays: 0,
+        targetDate: bookData.targetDate,
+        startDate: today,
+        lastRead: today,
         readingSessions: [],
-      };
-
-      const commitment = getCommitmentDetails(baseBook.commitmentLevel);
-      let dailyPlan = [];
-      try {
-        const planningInput = {
-          id: baseBook.id,
-          title: baseBook.title,
-          totalPages: baseBook.totalPages,
-          pagesRead: baseBook.pagesRead,
-          startDate: today,
-          targetEndDate: new Date(baseBook.targetDate),
-          readingDaysPerWeek: commitment.days,
-          readingSpeed: baseBook.readingSpeed,
-          status: "active",
-          dailyPlan: [],
-          lastRecalculatedAt: today,
-        };
-        dailyPlan = generateReadingPlan(planningInput).map((entry) => ({
-          ...entry,
-          date: entry.date.toISOString(),
-        }));
-      } catch (error) {
-        console.error("Failed to generate reading plan:", error);
-      }
-
-      const book = {
-        ...baseBook,
-        readingDaysPerWeek: commitment.days,
-        dailyPlan,
-        status: baseBook.pagesRead >= baseBook.totalPages ? "completed" : "active",
         completedAt:
-          baseBook.pagesRead >= baseBook.totalPages ? todayISO : undefined,
-        lastRecalculatedAt: today.toISOString(),
+          sanitizedPagesRead >= totalPagesValue ? today : undefined,
       };
-
-      // Debug log
-      console.log("Saving book:", book);
 
       await window.storage.set(`book:${book.id}`, JSON.stringify(book));
-      
-      // Verify the save was successful
-      const saved = await window.storage.get(`book:${book.id}`);
-      if (saved) {
-        console.log("Book saved successfully");
-        setBooks([...books, book]);
-        setShowAddBook(false);
-      } else {
-        console.error("Book was not saved to storage");
-      }
+      setBooks([...books, book]);
+      setShowAddBook(false);
     } catch (error) {
       console.error("Failed to save book:", error);
       alert("Failed to save book. Please try again.");
     }
   };
 
+  const editBook = async (bookId, updates) => {
+    const totalPages = Math.max(1, updates.totalPages || 0);
+    const pagesRead = Math.min(Math.max(updates.pagesRead || 0, 0), totalPages);
+    const updatedBooks = books.map((b) =>
+      b.id === bookId
+        ? {
+            ...b,
+            title: updates.title,
+            totalPages,
+            pagesRead,
+            targetDate: updates.targetDate,
+            completedAt:
+              pagesRead >= totalPages
+                ? b.completedAt || todayISO()
+                : undefined,
+          }
+        : b,
+    );
+    setBooks(updatedBooks);
+    const updated = updatedBooks.find((b) => b.id === bookId);
+    try {
+      await window.storage.set(`book:${bookId}`, JSON.stringify(updated));
+    } catch (error) {
+      console.error("Failed to save book:", error);
+    }
+    setEditingBook(null);
+  };
+
+  const exportBooks = () => {
+    const data = JSON.stringify({ version: 1, books }, null, 2);
+    const blob = new Blob([data], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `finishby-${new Date().toISOString().split("T")[0]}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const importBooks = async (file) => {
+    setImportMessage("");
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const incoming = Array.isArray(parsed) ? parsed : parsed?.books;
+      if (!Array.isArray(incoming)) {
+        throw new Error("File doesn't look like a Finish By export.");
+      }
+      const valid = incoming.filter(
+        (b) =>
+          b &&
+          typeof b.id === "string" &&
+          typeof b.title === "string" &&
+          typeof b.totalPages === "number" &&
+          typeof b.pagesRead === "number" &&
+          typeof b.targetDate === "string",
+      );
+      if (valid.length === 0) {
+        throw new Error("No valid books found in that file.");
+      }
+      const existingIds = new Set(books.map((b) => b.id));
+      const merged = [...books];
+      let added = 0;
+      for (const book of valid) {
+        if (existingIds.has(book.id)) continue;
+        merged.push(book);
+        await window.storage.set(`book:${book.id}`, JSON.stringify(book));
+        added += 1;
+      }
+      setBooks(merged);
+      setImportMessage(
+        added === 0
+          ? "Nothing new to import — those books are already here."
+          : `Imported ${added} book${added === 1 ? "" : "s"}.`,
+      );
+      setTimeout(() => setImportMessage(""), 4000);
+    } catch (error) {
+      console.error("Import failed:", error);
+      setImportMessage(`Import failed: ${error.message}`);
+      setTimeout(() => setImportMessage(""), 5000);
+    }
+  };
+
   const updateProgress = async (bookId, newPagesRead) => {
     const updatedBooks = books.map((book) => {
-      if (book.id === bookId) {
-        const today = new Date().toISOString().split("T")[0];
-        const lastReadDate = new Date(book.lastRead);
-        const todayDate = new Date(today);
-        const daysSinceLastRead = Math.floor(
-          (todayDate - lastReadDate) / (1000 * 60 * 60 * 24),
-        );
-
-        const pagesReadToday = newPagesRead - book.pagesRead;
-        const newSession = {
-          date: today,
-          pagesRead: pagesReadToday,
-          totalPages: newPagesRead,
-        };
-
-        return {
-          ...book,
-          pagesRead: newPagesRead,
-          lastRead: today,
-          missedDays:
-            daysSinceLastRead > 1
-              ? book.missedDays + (daysSinceLastRead - 1)
-              : book.missedDays,
-          readingSessions: [...(book.readingSessions || []), newSession],
-        };
-      }
-      return book;
+      if (book.id !== bookId) return book;
+      const today = todayISO();
+      const clamped = Math.min(
+        Math.max(newPagesRead, 0),
+        book.totalPages,
+      );
+      const session = {
+        date: today,
+        pagesRead: clamped - book.pagesRead,
+        endingPage: clamped,
+      };
+      return {
+        ...book,
+        pagesRead: clamped,
+        lastRead: today,
+        readingSessions: [...(book.readingSessions || []), session],
+        completedAt:
+          clamped >= book.totalPages ? today : book.completedAt,
+      };
     });
 
     setBooks(updatedBooks);
@@ -224,84 +343,160 @@ export default function FinishBy() {
     }
   };
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 to-stone-100 flex items-center justify-center">
-        <div className="text-slate-600">Loading...</div>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-stone-100">
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Crimson+Pro:wght@300;400;600&family=Work+Sans:wght@400;500;600&display=swap');
-        
+
         * {
           font-family: 'Work Sans', sans-serif;
         }
-        
+
         .serif {
           font-family: 'Crimson Pro', serif;
         }
-        
+
         @keyframes fadeInUp {
-          from {
-            opacity: 0;
-            transform: translateY(20px);
-          }
-          to {
-            opacity: 1;
-            transform: translateY(0);
-          }
+          from { opacity: 0; transform: translateY(20px); }
+          to { opacity: 1; transform: translateY(0); }
         }
-        
+
         @keyframes slideIn {
-          from {
-            opacity: 0;
-            transform: translateX(-20px);
-          }
-          to {
-            opacity: 1;
-            transform: translateX(0);
-          }
+          from { opacity: 0; transform: translateX(-20px); }
+          to { opacity: 1; transform: translateX(0); }
         }
-        
+
         @keyframes pulse {
-          0%, 100% {
-            opacity: 1;
-          }
-          50% {
-            opacity: 0.8;
-          }
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.8; }
         }
-        
-        .animate-fade-in-up {
-          animation: fadeInUp 0.6s ease-out;
+
+        @keyframes paperBallFloat {
+          0%, 100% { transform: scale(1) rotate(0deg); }
+          50% { transform: scale(1.04) rotate(1.5deg); }
         }
-        
-        .animate-slide-in {
-          animation: slideIn 0.4s ease-out;
+
+        @keyframes splashRise {
+          from { opacity: 0; transform: translateY(24px); }
+          to { opacity: 1; transform: translateY(0); }
         }
-        
-        .animate-pulse-slow {
-          animation: pulse 2s ease-in-out infinite;
+
+        .animate-fade-in-up { animation: fadeInUp 0.6s ease-out; }
+        .animate-slide-in { animation: slideIn 0.4s ease-out; }
+        .animate-pulse-slow { animation: pulse 2s ease-in-out infinite; }
+
+        .paper-ball-float { animation: paperBallFloat 5s ease-in-out infinite; }
+        .splash-rise { animation: splashRise 0.8s 0.3s ease-out both; }
+
+        .splash-overlay {
+          transition: opacity 900ms ease, transform 900ms ease, filter 900ms ease;
         }
-        
+
+        .paper-ball-button {
+          transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .paper-ball-button:hover { transform: scale(1.04); }
+        .paper-ball-button:active { transform: scale(0.96); }
+
         .book-card {
           transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
-        
+
         .book-card:hover {
           transform: translateY(-4px);
           box-shadow: 0 20px 40px rgba(0, 0, 0, 0.08);
         }
-        
+
         .progress-bar {
           transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
         }
       `}</style>
 
+      {/* Paper-ball splash overlay */}
+      <div
+        className={`splash-overlay fixed inset-0 z-50 flex flex-col items-center justify-center px-6 bg-gradient-to-br from-stone-100 via-stone-50 to-stone-200 ${
+          isUnfolded
+            ? "opacity-0 scale-110 pointer-events-none"
+            : "opacity-100"
+        }`}
+        style={{ filter: isUnfolded ? "blur(8px)" : "blur(0px)" }}
+        onClick={() => setIsUnfolded(true)}
+        role="button"
+        tabIndex={isUnfolded ? -1 : 0}
+        aria-label="Reveal Finish By"
+      >
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsUnfolded(true);
+          }}
+          className="paper-ball-button group relative cursor-pointer focus:outline-none"
+          aria-label="Unfold paper to reveal Finish By"
+        >
+          <div className="paper-ball-float relative w-64 h-64 md:w-80 md:h-80 flex items-center justify-center">
+            <svg
+              viewBox="0 0 200 200"
+              className="w-full h-full drop-shadow-[0_20px_40px_rgba(15,23,42,0.12)]"
+            >
+              <defs>
+                <filter id="paper-crumple" x="-20%" y="-20%" width="140%" height="140%">
+                  <feTurbulence
+                    type="fractalNoise"
+                    baseFrequency="0.04"
+                    numOctaves="5"
+                    result="noise"
+                  />
+                  <feDisplacementMap in="SourceGraphic" in2="noise" scale="40" />
+                </filter>
+              </defs>
+              <path
+                d="M100,20 C130,20 180,60 180,100 C180,140 140,180 100,180 C60,180 20,140 20,100 C20,60 70,20 100,20"
+                fill="#FFFFFF"
+                filter="url(#paper-crumple)"
+              />
+              <path
+                d="M100,40 C140,40 160,80 160,100 C160,120 120,160 100,160 C80,160 40,120 40,100 C40,80 60,40 100,40"
+                fill="none"
+                stroke="rgba(15,23,42,0.35)"
+                strokeWidth="1.5"
+                strokeDasharray="4 4"
+                filter="url(#paper-crumple)"
+              />
+              <path
+                d="M80,80 Q100,60 120,80 T120,120 Q100,140 80,120 T80,80"
+                fill="none"
+                stroke="rgba(15,23,42,0.2)"
+                strokeWidth="1"
+                filter="url(#paper-crumple)"
+              />
+            </svg>
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+              <span className="text-slate-700/60 font-medium tracking-[0.3em] text-[10px] uppercase group-hover:text-slate-800 transition-colors">
+                Unfold
+              </span>
+            </div>
+          </div>
+        </button>
+
+        <div className="splash-rise mt-12 text-center max-w-md">
+          <h1 className="text-6xl md:text-7xl serif font-light tracking-tight text-slate-800 mb-4">
+            Finish By
+          </h1>
+          <p className="text-slate-500 text-base md:text-lg mb-6 font-light">
+            For people who buy books but don&apos;t finish them
+          </p>
+          <p className="text-slate-400 font-medium tracking-[0.3em] text-[10px] uppercase">
+            Tap the paper to begin
+          </p>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="min-h-screen flex items-center justify-center">
+          <div className="text-slate-600">Loading...</div>
+        </div>
+      ) : (
       <div className="max-w-4xl mx-auto px-6 py-12">
         {/* Header */}
         <header className="mb-16 text-center animate-fade-in-up">
@@ -321,10 +516,11 @@ export default function FinishBy() {
             />
             <span className="text-sm text-slate-600">Daily reminders</span>
             <button
-              onClick={() => setNotifications(!notifications)}
+              onClick={handleNotificationsToggle}
               className={`w-10 h-6 rounded-full transition-colors ${
                 notifications ? "bg-slate-800" : "bg-slate-300"
               }`}
+              aria-label="Toggle daily reminders"
             >
               <div
                 className={`w-4 h-4 bg-white rounded-full transition-transform ${
@@ -333,6 +529,36 @@ export default function FinishBy() {
               />
             </button>
           </div>
+
+          {/* Data tools: export / import JSON */}
+          <div className="mt-4 flex justify-center items-center gap-2 text-xs">
+            <button
+              onClick={exportBooks}
+              disabled={books.length === 0}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-slate-500 hover:text-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Export
+            </button>
+            <span className="text-slate-300">·</span>
+            <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-slate-500 hover:text-slate-800 cursor-pointer transition-colors">
+              <Upload className="w-3.5 h-3.5" />
+              Import
+              <input
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (file) importBooks(file);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+          </div>
+          {importMessage && (
+            <p className="mt-2 text-xs text-slate-500">{importMessage}</p>
+          )}
         </header>
 
         {/* Empty State */}
@@ -379,6 +605,7 @@ export default function FinishBy() {
                   book={book}
                   onUpdate={updateProgress}
                   onDelete={deleteBook}
+                  onEdit={setEditingBook}
                   delay={index * 0.1}
                 />
               ))}
@@ -390,55 +617,56 @@ export default function FinishBy() {
         {showAddBook && (
           <AddBookForm onAdd={addBook} onCancel={() => setShowAddBook(false)} />
         )}
+
+        {/* Edit Book Modal */}
+        {editingBook && (
+          <AddBookForm
+            existingBook={editingBook}
+            onAdd={(updates) => editBook(editingBook.id, updates)}
+            onCancel={() => setEditingBook(null)}
+          />
+        )}
       </div>
+      )}
     </div>
   );
 }
 
-function BookCard({ book, onUpdate, onDelete, delay }) {
+function BookCard({ book, onUpdate, onDelete, onEdit, delay }) {
   const [isEditing, setIsEditing] = useState(false);
-  const [currentPageInput, setCurrentPageInput] = useState(
-    book.pagesRead || book.pagesRead === 0 ? String(book.pagesRead) : "",
-  );
+  const [endingPageInput, setEndingPageInput] = useState(String(book.pagesRead));
 
   useEffect(() => {
-    setCurrentPageInput(
-      book.pagesRead || book.pagesRead === 0 ? String(book.pagesRead) : "",
-    );
+    setEndingPageInput(String(book.pagesRead));
   }, [book.pagesRead]);
 
-  // Calculate all the metrics
-  const metrics = calculateBookMetrics(book);
-  const message = getAdaptiveMessage(book, metrics);
+  const isComplete = book.pagesRead >= book.totalPages;
+  const progress = (book.pagesRead / book.totalPages) * 100;
+  const target = dailyTarget(book);
+  const daysLeft = daysUntil(book.targetDate);
+  const isPastDeadline = !isComplete && daysLeft < 0;
 
   const sanitizePageInput = (value) => {
     if (value === "") {
-      setCurrentPageInput("");
+      setEndingPageInput("");
       return;
     }
-
     const cleaned = value.replace(/^0+(?=\d)/, "");
     const parsed = parseInt(cleaned, 10);
-    if (Number.isNaN(parsed)) {
-      return;
-    }
+    if (Number.isNaN(parsed)) return;
     const limited = Math.min(Math.max(parsed, 0), book.totalPages);
-    setCurrentPageInput(String(limited));
+    setEndingPageInput(String(limited));
   };
 
-  const resolveCurrentPageValue = () => {
-    if (currentPageInput === "") {
-      return book.pagesRead;
-    }
-    const parsed = parseInt(currentPageInput, 10);
-    if (Number.isNaN(parsed)) {
-      return book.pagesRead;
-    }
+  const resolveEndingPage = () => {
+    if (endingPageInput === "") return book.pagesRead;
+    const parsed = parseInt(endingPageInput, 10);
+    if (Number.isNaN(parsed)) return book.pagesRead;
     return Math.min(Math.max(parsed, 0), book.totalPages);
   };
 
   const handleSaveProgress = () => {
-    onUpdate(book.id, resolveCurrentPageValue());
+    onUpdate(book.id, resolveEndingPage());
     setIsEditing(false);
   };
 
@@ -447,165 +675,100 @@ function BookCard({ book, onUpdate, onDelete, delay }) {
       className="book-card bg-white rounded-2xl p-6 shadow-sm border border-slate-200 animate-slide-in"
       style={{ animationDelay: `${delay}s` }}
     >
-      <div className="flex justify-between items-start mb-4">
-        <div className="flex-1">
-          <h3 className="text-xl serif font-semibold text-slate-800 mb-1">
+      <div className="flex justify-between items-start mb-5">
+        <div className="flex-1 min-w-0">
+          <h3 className="text-xl serif font-semibold text-slate-800 truncate">
             {book.title}
           </h3>
-          <p className="text-sm text-slate-500">{book.totalPages} pages</p>
+          <p className="text-xs text-slate-400 mt-1">
+            {book.pagesRead} of {book.totalPages} pages
+          </p>
         </div>
-        <button
-          onClick={() => onDelete(book.id)}
-          className="text-slate-400 hover:text-slate-600 transition-colors"
-        >
-          <X className="w-5 h-5" />
-        </button>
-      </div>
-
-      {/* Progress Bar */}
-      <div className="mb-4">
-        <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
-          <div
-            className="progress-bar h-full bg-gradient-to-r from-slate-600 to-slate-800 rounded-full"
-            style={{ width: `${Math.min(metrics.progress, 100)}%` }}
-          />
-        </div>
-        <div className="flex justify-between items-center mt-2">
-          <span className="text-sm text-slate-600">
-            {book.pagesRead} of {book.totalPages}
-          </span>
-          <span className="text-sm font-medium text-slate-700">
-            {Math.round(metrics.progress)}%
-          </span>
+        <div className="flex items-center gap-1 ml-3">
+          <button
+            onClick={() => onEdit(book)}
+            className="p-1 text-slate-300 hover:text-slate-600 transition-colors"
+            aria-label="Edit book"
+          >
+            <Pencil className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => onDelete(book.id)}
+            className="p-1 text-slate-300 hover:text-slate-600 transition-colors"
+            aria-label="Delete book"
+          >
+            <X className="w-5 h-5" />
+          </button>
         </div>
       </div>
 
-      {/* Commitment Level Badge */}
-      <div className="mb-4">
-        <span
-          className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${
-            book.commitmentLevel === "gentle"
-              ? "bg-emerald-50 text-emerald-700"
-              : book.commitmentLevel === "balanced"
-                ? "bg-blue-50 text-blue-700"
-                : "bg-purple-50 text-purple-700"
-          }`}
-        >
-          {book.commitmentLevel.charAt(0).toUpperCase() +
-            book.commitmentLevel.slice(1)}{" "}
-          pace
-        </span>
-      </div>
-
-      {/* Stats Grid */}
-      <div className="grid grid-cols-3 gap-3 mb-4">
-        <div className="bg-slate-50 rounded-lg p-3">
-          <div className="flex items-center gap-1 text-slate-600 mb-1">
-            <Calendar className="w-3 h-3" />
-            <span className="text-xs">Finish By</span>
+      {isComplete ? (
+        <div className="text-center py-6">
+          <p className="text-2xl serif font-semibold text-slate-800 mb-1">
+            You finished.
+          </p>
+          <p className="text-sm text-slate-500">Nice work.</p>
+        </div>
+      ) : isPastDeadline ? (
+        <div className="text-center py-4">
+          <AlertTriangle className="w-6 h-6 text-amber-500 mx-auto mb-2" />
+          <p className="text-base serif font-semibold text-slate-800 mb-1">
+            Deadline passed
+          </p>
+          <p className="text-xs text-slate-500 mb-4">
+            {Math.abs(daysLeft)} day{Math.abs(daysLeft) === 1 ? "" : "s"} ago ·{" "}
+            {book.totalPages - book.pagesRead} pages still to go
+          </p>
+          <button
+            onClick={() => onEdit(book)}
+            className="px-5 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors text-sm font-medium"
+          >
+            Extend deadline
+          </button>
+        </div>
+      ) : (
+        <>
+          <div className="text-center mb-5">
+            <p className="text-[10px] uppercase tracking-[0.2em] text-slate-400 mb-1">
+              Today
+            </p>
+            <p className="serif text-5xl font-light text-slate-800 leading-none">
+              {target}
+            </p>
+            <p className="text-xs text-slate-500 mt-2">
+              pages to finish by{" "}
+              {new Date(book.targetDate).toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+              })}
+              {daysLeft > 0 && ` · ${daysLeft} day${daysLeft === 1 ? "" : "s"} left`}
+            </p>
           </div>
-          <p className="text-sm font-semibold text-slate-800">
-            {new Date(book.targetDate).toLocaleDateString("en-US", {
-              month: "short",
-              day: "numeric",
-            })}
-          </p>
-        </div>
 
-        <div className="bg-slate-50 rounded-lg p-3">
-          <div className="flex items-center gap-1 text-slate-600 mb-1">
-            <TrendingUp className="w-3 h-3" />
-            <span className="text-xs">Days Left</span>
+          <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mb-5">
+            <div
+              className="progress-bar h-full bg-slate-800 rounded-full"
+              style={{ width: `${Math.min(progress, 100)}%` }}
+            />
           </div>
-          <p className="text-sm font-semibold text-slate-800">
-            {metrics.daysRemaining > 0 ? metrics.daysRemaining : 0}
-          </p>
-        </div>
 
-        <div className="bg-slate-50 rounded-lg p-3">
-          <div className="flex items-center gap-1 text-slate-600 mb-1">
-            <Clock className="w-3 h-3" />
-            <span className="text-xs">Buffer</span>
-          </div>
-          <p className="text-sm font-semibold text-slate-800">
-            {metrics.bufferDays}d
-          </p>
-        </div>
-      </div>
-
-      {/* Adaptive Message */}
-      <div
-        className={`mb-4 p-3 rounded-lg ${
-          message.type === "success"
-            ? "bg-green-50 border border-green-200"
-            : message.type === "adjusted"
-              ? "bg-amber-50 border border-amber-200"
-              : message.type === "gentle"
-                ? "bg-blue-50 border border-blue-200"
-                : message.type === "warning"
-                  ? "bg-rose-50 border border-rose-200"
-                  : "bg-slate-50 border border-slate-200"
-        }`}
-      >
-        <p
-          className={`text-sm ${
-            message.type === "success"
-              ? "text-green-800"
-              : message.type === "adjusted"
-                ? "text-amber-800"
-                : message.type === "gentle"
-                  ? "text-blue-800"
-                  : message.type === "warning"
-                    ? "text-rose-800"
-                    : "text-slate-700"
-          }`}
-        >
-          {message.text}
-        </p>
-      </div>
-
-      {/* Reading Window */}
-      {!metrics.isComplete && metrics.readingWindow && (
-        <div className="mb-4 p-3 bg-indigo-50 rounded-lg border border-indigo-200">
-          <p className="text-xs text-indigo-600 mb-1">
-            Suggested reading window
-          </p>
-          <p className="text-sm font-medium text-indigo-900">
-            {metrics.readingWindow}
-          </p>
-        </div>
-      )}
-
-      {/* Pages per day breakdown */}
-      {!metrics.isComplete && (
-        <div className="mb-4 flex items-center justify-between text-sm">
-          <span className="text-slate-600">Daily target:</span>
-          <span className="font-semibold text-slate-800">
-            {metrics.adjustedPagesPerDay} pages/day
-            {metrics.needsAdjustment && (
-              <span className="text-amber-600 text-xs ml-2">(adjusted)</span>
-            )}
-          </span>
-        </div>
-      )}
-
-      {/* Update Progress */}
-      {!metrics.isComplete && (
-        <div>
           {isEditing ? (
             <div className="flex gap-2">
               <input
                 type="text"
                 inputMode="numeric"
                 pattern="[0-9]*"
-                value={currentPageInput}
+                value={endingPageInput}
                 onChange={(e) => sanitizePageInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSaveProgress()}
                 className="flex-1 px-4 py-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400"
-                placeholder="Current page"
+                placeholder="What page did you end on?"
+                aria-label="Ending page"
+                autoFocus
               />
               <button
                 onClick={handleSaveProgress}
-                className="px-6 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors flex items-center gap-2"
+                className="px-5 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors flex items-center gap-2"
               >
                 <Check className="w-4 h-4" />
                 Save
@@ -614,32 +777,15 @@ function BookCard({ book, onUpdate, onDelete, delay }) {
           ) : (
             <button
               onClick={() => {
-                setCurrentPageInput(
-                  book.pagesRead || book.pagesRead === 0
-                    ? String(book.pagesRead)
-                    : "",
-                );
+                setEndingPageInput(String(book.pagesRead));
                 setIsEditing(true);
               }}
-              className="w-full py-2 border-2 border-slate-300 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors font-medium"
+              className="w-full py-2 border-2 border-slate-200 text-slate-700 rounded-lg hover:bg-slate-50 transition-colors font-medium"
             >
-              Update Progress
+              I read up to page…
             </button>
           )}
-        </div>
-      )}
-
-      {/* Completion celebration */}
-      {metrics.isComplete && (
-        <div className="text-center py-4">
-          <div className="text-4xl mb-2">🎉</div>
-          <p className="text-lg serif font-semibold text-slate-800">
-            You finished!
-          </p>
-          <p className="text-sm text-slate-600 mt-1">
-            Completed in {metrics.daysElapsed} days
-          </p>
-        </div>
+        </>
       )}
     </div>
   );
@@ -652,155 +798,189 @@ BookCard.propTypes = {
     totalPages: PropTypes.number.isRequired,
     pagesRead: PropTypes.number.isRequired,
     targetDate: PropTypes.string.isRequired,
-    commitmentLevel: PropTypes.string.isRequired,
-    startDate: PropTypes.string.isRequired,
-    lastRead: PropTypes.string.isRequired,
-    missedDays: PropTypes.number.isRequired,
+    startDate: PropTypes.string,
+    lastRead: PropTypes.string,
     readingSessions: PropTypes.array,
   }).isRequired,
   onUpdate: PropTypes.func.isRequired,
   onDelete: PropTypes.func.isRequired,
+  onEdit: PropTypes.func.isRequired,
   delay: PropTypes.number,
 };
 
-function AddBookForm({ onAdd, onCancel }) {
+function BookSearch({ onPick }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [open, setOpen] = useState(false);
+  const debounceRef = useRef(null);
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    const q = query.trim();
+    if (q.length < 3) {
+      setResults([]);
+      setOpen(false);
+      return;
+    }
+    debounceRef.current = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const res = await fetch(
+          `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=5&fields=title,author_name,number_of_pages_median,cover_i,key`,
+        );
+        const data = await res.json();
+        const items = (data.docs || [])
+          .map((doc) => ({
+            id: doc.key,
+            title: doc.title,
+            authors: doc.author_name || [],
+            pageCount: doc.number_of_pages_median || 0,
+            thumbnail: doc.cover_i
+              ? `https://covers.openlibrary.org/b/id/${doc.cover_i}-S.jpg`
+              : null,
+          }))
+          .filter((b) => b.title && b.pageCount > 0);
+        setResults(items);
+        setOpen(true);
+      } catch (e) {
+        console.error("Book search failed:", e);
+        setResults([]);
+      } finally {
+        setSearching(false);
+      }
+    }, 350);
+    return () => clearTimeout(debounceRef.current);
+  }, [query]);
+
+  return (
+    <div className="relative">
+      <label className="block text-sm font-medium text-slate-700 mb-2">
+        Search for a book
+      </label>
+      <div className="relative">
+        <Search className="w-4 h-4 absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => results.length > 0 && setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 150)}
+          className="w-full pl-11 pr-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400"
+          placeholder="Title or author…"
+        />
+      </div>
+      {open && (results.length > 0 || searching) && (
+        <ul className="absolute z-10 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-72 overflow-y-auto">
+          {searching && results.length === 0 && (
+            <li className="px-4 py-3 text-sm text-slate-400">Searching…</li>
+          )}
+          {results.map((book) => (
+            <li key={book.id}>
+              <button
+                type="button"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  onPick(book);
+                  setQuery("");
+                  setResults([]);
+                  setOpen(false);
+                }}
+                className="w-full text-left px-4 py-3 hover:bg-slate-50 flex gap-3 items-start"
+              >
+                {book.thumbnail ? (
+                  <img
+                    src={book.thumbnail}
+                    alt=""
+                    className="w-10 h-14 object-cover rounded shadow-sm flex-shrink-0"
+                  />
+                ) : (
+                  <div className="w-10 h-14 bg-slate-100 rounded flex-shrink-0" />
+                )}
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-slate-800 truncate">
+                    {book.title}
+                  </p>
+                  {book.authors.length > 0 && (
+                    <p className="text-xs text-slate-500 truncate">
+                      {book.authors.join(", ")}
+                    </p>
+                  )}
+                  <p className="text-xs text-slate-400">{book.pageCount} pages</p>
+                </div>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+BookSearch.propTypes = {
+  onPick: PropTypes.func.isRequired,
+};
+
+function AddBookForm({ onAdd, onCancel, existingBook }) {
+  const isEdit = !!existingBook;
   const [formData, setFormData] = useState({
-    title: "",
-    totalPages: "",
-    pagesRead: "",
-    targetDate: "",
-    commitmentLevel: "balanced",
-    readingSpeed: "moderate",
+    title: existingBook?.title || "",
+    totalPages: existingBook ? String(existingBook.totalPages) : "",
+    pagesRead: existingBook ? String(existingBook.pagesRead) : "",
+    targetDate: existingBook?.targetDate || "",
   });
   const [error, setError] = useState("");
 
   const handleSubmit = (e) => {
     e.preventDefault();
     setError("");
-    
-    // Validate form data
+
     if (!formData.title || !formData.totalPages || !formData.targetDate) {
-      setError("Please fill in all required fields (title, pages, and date)");
-      console.error('Missing required fields:', { title: formData.title, totalPages: formData.totalPages, targetDate: formData.targetDate });
+      setError("Please add a title, total pages, and a finish-by date.");
       return;
     }
 
     const totalPages = parseInt(formData.totalPages, 10);
     if (Number.isNaN(totalPages) || totalPages <= 0) {
-      setError("Total pages must be a valid number greater than 0");
+      setError("Total pages must be a number greater than 0.");
       return;
     }
 
     const pagesRead = formData.pagesRead ? parseInt(formData.pagesRead, 10) : 0;
     if (Number.isNaN(pagesRead) || pagesRead < 0) {
-      setError("Pages read must be a valid number");
+      setError("Pages already read must be a non-negative number.");
       return;
     }
 
-    // Ensure pagesRead doesn't exceed totalPages
     if (pagesRead > totalPages) {
-      setError('Pages read cannot exceed total pages');
+      setError("Pages already read can't exceed total pages.");
       return;
     }
 
     onAdd({
-      ...formData,
-      totalPages: totalPages,
-      pagesRead: pagesRead,
+      title: formData.title.trim(),
+      totalPages,
+      pagesRead,
+      targetDate: formData.targetDate,
     });
   };
 
-  const getSuggestedDate = () => {
-    const pages = parseInt(formData.totalPages);
-    if (!pages) return "";
-
-    const { pagesPerDay } = getReadingSpeedDetails(formData.readingSpeed);
-
-    const commitment = getCommitmentDetails(formData.commitmentLevel);
-    const effectiveDays = Math.ceil(
-      (pages / pagesPerDay) * (7 / commitment.days),
-    );
-
-    const date = new Date();
-    date.setDate(date.getDate() + effectiveDays);
-    return date.toISOString().split("T")[0];
+  const previewBook = {
+    totalPages: parseInt(formData.totalPages, 10) || 0,
+    pagesRead: formData.pagesRead === "" ? 0 : parseInt(formData.pagesRead, 10) || 0,
+    targetDate: formData.targetDate,
   };
-
-  const calculatePreview = () => {
-    const totalPagesValue = parseInt(formData.totalPages, 10);
-    if (!totalPagesValue || !formData.targetDate) return null;
-
-    const pagesReadValue =
-      formData.pagesRead === "" ? 0 : parseInt(formData.pagesRead, 10) || 0;
-
-    if (pagesReadValue > totalPagesValue) {
-      return { error: "Pages read cannot exceed total pages." };
-    }
-
-    const targetDate = new Date(formData.targetDate);
-    const commitment = getCommitmentDetails(formData.commitmentLevel);
-
-    const previewBook = {
-      id: "preview",
-      title: formData.title || "Preview",
-      totalPages: totalPagesValue,
-      pagesRead: pagesReadValue,
-      startDate: new Date(),
-      targetEndDate: targetDate,
-      readingDaysPerWeek: commitment.days,
-      readingSpeed: formData.readingSpeed,
-      status: "active",
-      dailyPlan: [],
-      lastRecalculatedAt: new Date(),
-    };
-
-    try {
-      const plan = generateReadingPlan(previewBook);
-      if (!plan.length) {
-        return {
-          message: "All pages are accounted for—great job!",
-        };
-      }
-
-      const catchUpDays = plan.filter((entry) => entry.isCatchUp).length;
-      const projectedFinish = plan[plan.length - 1].date;
-      const formatDate = (date) =>
-        date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-      const delta = differenceInDays(projectedFinish, targetDate);
-
-      let targetMessage = `Right on track for ${formatDate(targetDate)}.`;
-      if (delta > 0) {
-        targetMessage = `This pace finishes about ${delta} day${
-          delta === 1 ? "" : "s"
-        } after ${formatDate(targetDate)}.`;
-      } else if (delta < 0) {
-        const lead = Math.abs(delta);
-        targetMessage = `At this pace you'll finish about ${lead} day${
-          lead === 1 ? "" : "s"
-        } before ${formatDate(targetDate)}.`;
-      }
-
-      return {
-        pagesRemaining: totalPagesValue - pagesReadValue,
-        dailyTarget: plan[0].pagesTarget,
-        speedLabel: getReadingSpeedDetails(formData.readingSpeed).label,
-        readingDays: plan.length - catchUpDays,
-        catchUpDays,
-        projectedFinish,
-        targetMessage,
-      };
-    } catch (error) {
-      return { error: error.message };
-    }
-  };
-
-  const preview = calculatePreview();
+  const showPreview =
+    previewBook.totalPages > 0 &&
+    !!formData.targetDate &&
+    previewBook.pagesRead <= previewBook.totalPages;
+  const previewTarget = showPreview ? dailyTarget(previewBook) : 0;
 
   return (
     <div className="fixed inset-0 bg-black/20 backdrop-blur-sm flex items-center justify-center p-4 z-50 animate-fade-in-up">
       <div className="bg-white rounded-2xl p-8 max-w-md w-full shadow-2xl max-h-[90vh] overflow-y-auto">
         <h2 className="text-3xl serif font-semibold text-slate-800 mb-6">
-          Add a Book
+          {isEdit ? "Edit Book" : "Add a Book"}
         </h2>
 
         {error && (
@@ -810,6 +990,18 @@ function AddBookForm({ onAdd, onCancel }) {
         )}
 
         <form onSubmit={handleSubmit} className="space-y-5">
+          {!isEdit && (
+            <BookSearch
+              onPick={(book) =>
+                setFormData((f) => ({
+                  ...f,
+                  title: book.title,
+                  totalPages: String(book.pageCount),
+                }))
+              }
+            />
+          )}
+
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-2">
               Book Title
@@ -817,9 +1009,7 @@ function AddBookForm({ onAdd, onCancel }) {
             <input
               type="text"
               value={formData.title}
-              onChange={(e) =>
-                setFormData({ ...formData, title: e.target.value })
-              }
+              onChange={(e) => setFormData({ ...formData, title: e.target.value })}
               className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400"
               placeholder="What are you reading?"
               required
@@ -856,25 +1046,19 @@ function AddBookForm({ onAdd, onCancel }) {
                   setFormData({ ...formData, pagesRead: "" });
                   return;
                 }
-
-                const cleanedValue = rawValue.replace(/^0+(?=\d)/, "");
-                const parsedValue = parseInt(cleanedValue, 10);
-                if (Number.isNaN(parsedValue)) {
+                const cleaned = rawValue.replace(/^0+(?=\d)/, "");
+                const parsed = parseInt(cleaned, 10);
+                if (Number.isNaN(parsed)) {
                   setFormData({ ...formData, pagesRead: "" });
                   return;
                 }
-
                 const totalPagesValue = parseInt(formData.totalPages, 10);
                 const hasMax =
                   !Number.isNaN(totalPagesValue) && totalPagesValue > 0;
-                const limitedValue = hasMax
-                  ? Math.min(parsedValue, totalPagesValue)
-                  : parsedValue;
-
-                setFormData({
-                  ...formData,
-                  pagesRead: limitedValue,
-                });
+                const limited = hasMax
+                  ? Math.min(parsed, totalPagesValue)
+                  : parsed;
+                setFormData({ ...formData, pagesRead: limited });
               }}
               className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-slate-400"
               placeholder="e.g. 50"
@@ -883,67 +1067,6 @@ function AddBookForm({ onAdd, onCancel }) {
             />
             <p className="text-xs text-slate-500 mt-1">
               Leave blank if starting fresh
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-3">
-              Commitment Level
-            </label>
-            <div className="space-y-2">
-              {["gentle", "balanced", "intense"].map((level) => {
-                const details = getCommitmentDetails(level);
-                return (
-                  <button
-                    key={level}
-                    type="button"
-                    onClick={() =>
-                      setFormData({ ...formData, commitmentLevel: level })
-                    }
-                    className={`w-full text-left py-3 px-4 rounded-lg border-2 transition-all ${
-                      formData.commitmentLevel === level
-                        ? "border-slate-800 bg-slate-50"
-                        : "border-slate-200 hover:border-slate-300"
-                    }`}
-                  >
-                    <div className="font-medium text-slate-800 capitalize">
-                      {level}
-                    </div>
-                    <div className="text-xs text-slate-600 mt-1">
-                      {details.description}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2">
-              Reading Speed
-            </label>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              {["slow", "moderate", "fast"].map((speed) => (
-                <button
-                  key={speed}
-                  type="button"
-                  onClick={() =>
-                    setFormData({ ...formData, readingSpeed: speed })
-                  }
-                  className={`w-full py-2 px-4 rounded-lg border-2 transition-all text-sm font-medium text-center ${
-                    formData.readingSpeed === speed
-                      ? "border-slate-800 bg-slate-800 text-white"
-                      : "border-slate-200 text-slate-600 hover:border-slate-300"
-                  }`}
-                >
-                  {speed.charAt(0).toUpperCase() + speed.slice(1)}
-                </button>
-              ))}
-            </div>
-            <p className="text-xs text-slate-500 mt-2">
-              {formData.readingSpeed === "slow" && "~15 pages/day"}
-              {formData.readingSpeed === "moderate" && "~25 pages/day"}
-              {formData.readingSpeed === "fast" && "~40 pages/day"}
             </p>
           </div>
 
@@ -960,79 +1083,26 @@ function AddBookForm({ onAdd, onCancel }) {
                 }
                 className="w-full px-4 py-3 bg-white text-slate-800 focus:outline-none text-base text-center"
                 required
-                min={new Date().toISOString().split("T")[0]}
+                min={isEdit ? undefined : new Date().toISOString().split("T")[0]}
               />
             </div>
-            {formData.totalPages && (
-              <button
-                type="button"
-                onClick={() =>
-                  setFormData({ ...formData, targetDate: getSuggestedDate() })
-                }
-                className="text-sm text-slate-600 hover:text-slate-800 mt-2 underline"
-              >
-                Use suggested date based on your pace
-              </button>
-            )}
           </div>
 
-          {/* Preview */}
-          {preview && (
-            <div className="bg-slate-50 rounded-lg p-4 border border-slate-200">
-              <p className="text-xs font-medium text-slate-600 mb-2">
-                Reading plan preview ({formData.readingSpeed} pace)
+          {showPreview && (
+            <div className="bg-slate-50 rounded-lg p-4 border border-slate-200 text-center">
+              <p className="text-xs uppercase tracking-[0.2em] text-slate-400 mb-2">
+                Your pace
               </p>
-              {typeof preview.pagesRemaining === "number" && (
-                <div className="space-y-1 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-slate-600">Pages remaining:</span>
-                    <span className="font-medium text-slate-800">
-                      {preview.pagesRemaining}
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-600">
-                      Daily target ({preview.speedLabel}):
-                    </span>
-                    <span className="font-medium text-slate-800">
-                      {preview.dailyTarget} pages
-                    </span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-600">Reading days scheduled:</span>
-                    <span className="font-medium text-slate-800">
-                      {preview.readingDays}
-                    </span>
-                  </div>
-                  {typeof preview.catchUpDays === "number" && (
-                    <div className="flex justify-between">
-                      <span className="text-slate-600">Catch-up days:</span>
-                      <span className="font-medium text-slate-800">
-                        {preview.catchUpDays}
-                      </span>
-                    </div>
-                  )}
-                  {preview.projectedFinish && (
-                    <div className="flex justify-between">
-                      <span className="text-slate-600">Projected finish:</span>
-                      <span className="font-medium text-slate-800">
-                        {formatShortDate(preview.projectedFinish)}
-                      </span>
-                    </div>
-                  )}
-                </div>
-              )}
-              {preview.error && (
-                <p className="text-xs mt-3 text-rose-600">{preview.error}</p>
-              )}
-              {!preview.error && preview.message && (
-                <p className="text-xs mt-3 text-slate-500">{preview.message}</p>
-              )}
-              {!preview.error && preview.targetMessage && (
-                <p className="text-xs mt-3 text-slate-500">
-                  {preview.targetMessage}
-                </p>
-              )}
+              <p className="serif text-4xl font-light text-slate-800 leading-none">
+                {previewTarget}
+              </p>
+              <p className="text-xs text-slate-500 mt-2">
+                pages a day to finish by{" "}
+                {new Date(formData.targetDate).toLocaleDateString("en-US", {
+                  month: "short",
+                  day: "numeric",
+                })}
+              </p>
             </div>
           )}
 
@@ -1048,7 +1118,7 @@ function AddBookForm({ onAdd, onCancel }) {
               type="submit"
               className="flex-1 py-3 bg-slate-800 text-white rounded-lg hover:bg-slate-700 transition-colors font-medium"
             >
-              Add Book
+              {isEdit ? "Save Changes" : "Add Book"}
             </button>
           </div>
         </form>
@@ -1060,156 +1130,5 @@ function AddBookForm({ onAdd, onCancel }) {
 AddBookForm.propTypes = {
   onAdd: PropTypes.func.isRequired,
   onCancel: PropTypes.func.isRequired,
+  existingBook: PropTypes.object,
 };
-
-// CORE ALGORITHM LOGIC
-function calculateBookMetrics(book) {
-  const today = new Date().toISOString().split("T")[0];
-  const startDate = new Date(book.startDate);
-  const targetDate = new Date(book.targetDate);
-  const todayDate = new Date(today);
-
-  // Time calculations
-  const totalDays = Math.ceil((targetDate - startDate) / (1000 * 60 * 60 * 24));
-  const daysElapsed = Math.ceil(
-    (todayDate - startDate) / (1000 * 60 * 60 * 24),
-  );
-  const daysRemaining = Math.ceil(
-    (targetDate - todayDate) / (1000 * 60 * 60 * 24),
-  );
-
-  // Commitment level adjustments
-  const commitmentMultipliers = {
-    gentle: 4 / 7, // 4 days per week
-    balanced: 6 / 7, // 6 days per week
-    intense: 1, // 7 days per week
-  };
-
-  const commitmentMultiplier =
-    commitmentMultipliers[book.commitmentLevel] ||
-    commitmentMultipliers.balanced;
-  const effectiveReadingDays = Math.floor(totalDays * commitmentMultiplier);
-  const effectiveRemainingDays = Math.floor(
-    daysRemaining * commitmentMultiplier,
-  );
-
-  // Buffer days (days you can skip)
-  const bufferDays = totalDays - effectiveReadingDays;
-
-  // Page calculations
-  const pagesRemaining = book.totalPages - book.pagesRead;
-  const originalPagesPerDay = Math.ceil(book.totalPages / effectiveReadingDays);
-  const adjustedPagesPerDay =
-    effectiveRemainingDays > 0
-      ? Math.ceil(pagesRemaining / effectiveRemainingDays)
-      : pagesRemaining;
-
-  // Progress metrics
-  const progress = (book.pagesRead / book.totalPages) * 100;
-  const isComplete = book.pagesRead >= book.totalPages;
-  const needsAdjustment =
-    adjustedPagesPerDay > originalPagesPerDay * 1.2 && !isComplete;
-
-  // Intensity calculation (for adaptive messaging)
-  const intensityScore = adjustedPagesPerDay / originalPagesPerDay;
-
-  // Reading window suggestion
-  const readingWindow = getReadingWindow(
-    book.commitmentLevel,
-    adjustedPagesPerDay,
-  );
-
-  // Average pace from reading sessions
-  const avgPagesPerSession =
-    book.readingSessions && book.readingSessions.length > 0
-      ? book.readingSessions.reduce((sum, s) => sum + s.pagesRead, 0) /
-        book.readingSessions.length
-      : 0;
-
-  return {
-    totalDays,
-    daysElapsed,
-    daysRemaining,
-    effectiveReadingDays,
-    effectiveRemainingDays,
-    bufferDays,
-    pagesRemaining,
-    originalPagesPerDay,
-    adjustedPagesPerDay,
-    progress,
-    isComplete,
-    needsAdjustment,
-    intensityScore,
-    readingWindow,
-    avgPagesPerSession,
-  };
-}
-
-function getReadingWindow(commitmentLevel, pagesPerDay) {
-  // Estimate minutes based on average reading speed (250 words/min, ~250 words/page)
-  const estimatedMinutes = Math.ceil(pagesPerDay / 2.5);
-
-  if (commitmentLevel === "gentle") {
-    return `${estimatedMinutes}-${estimatedMinutes + 15} min (when you feel like it)`;
-  } else if (commitmentLevel === "balanced") {
-    return `${estimatedMinutes} min (morning or evening)`;
-  } else {
-    return `${estimatedMinutes} min daily (build the habit)`;
-  }
-}
-
-function getAdaptiveMessage(book, metrics) {
-  if (metrics.isComplete) {
-    return {
-      text: `You finished! Completed in ${metrics.daysElapsed} days. 🎉`,
-      type: "success",
-    };
-  }
-
-  if (metrics.daysRemaining < 0) {
-    return {
-      text: "Want to extend your finish date? No pressure—just adjust when you're ready.",
-      type: "gentle",
-    };
-  }
-
-  if (book.missedDays > 3 && metrics.needsAdjustment) {
-    return {
-      text: "Life happens. We've recalculated your pace—you're still on track if you start today.",
-      type: "adjusted",
-    };
-  }
-
-  if (metrics.intensityScore > 1.5) {
-    return {
-      text: `Pace increased to ${metrics.adjustedPagesPerDay} pages/day. Consider extending your date or switching to a gentler commitment.`,
-      type: "warning",
-    };
-  }
-
-  if (metrics.progress > 75) {
-    return {
-      text: `You're in the home stretch! Just ${metrics.pagesRemaining} pages to go.`,
-      type: "success",
-    };
-  }
-
-  if (metrics.progress > 50) {
-    return {
-      text: `Halfway there! ${metrics.daysRemaining} days left at your current pace.`,
-      type: "normal",
-    };
-  }
-
-  if (book.missedDays > 0) {
-    return {
-      text: `Back at it! ${metrics.adjustedPagesPerDay} pages today gets you on track.`,
-      type: "normal",
-    };
-  }
-
-  return {
-    text: `${metrics.adjustedPagesPerDay} pages/day to finish on ${new Date(book.targetDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`,
-    type: "normal",
-  };
-}
