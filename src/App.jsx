@@ -124,7 +124,7 @@ export default function FinishBy() {
             body: target > 0
               ? `${target} pages of ${active.title} today`
               : `Pick up ${active.title}`,
-            icon: "/vite.svg",
+            icon: "/icon-192.png",
           });
         }
         scheduleNext();
@@ -164,7 +164,28 @@ export default function FinishBy() {
     localStorage.setItem(NOTIFICATION_PREF_KEY, "true");
     new Notification("Reminders on", {
       body: "We'll nudge you each evening to keep reading.",
-      icon: "/vite.svg",
+      icon: "/icon-192.png",
+    });
+  };
+
+  const sendTestNotification = () => {
+    if (typeof Notification === "undefined") {
+      alert("This browser doesn't support notifications.");
+      return;
+    }
+    if (Notification.permission !== "granted") {
+      alert("Turn on Daily reminders first to grant permission.");
+      return;
+    }
+    const active = books.find((b) => b.pagesRead < b.totalPages);
+    const target = active ? dailyTarget(active) : 0;
+    new Notification("Time to read", {
+      body: active
+        ? target > 0
+          ? `${target} pages of ${active.title} today`
+          : `Pick up ${active.title}`
+        : "Add a book to start tracking",
+      icon: "/icon-192.png",
     });
   };
 
@@ -528,6 +549,14 @@ export default function FinishBy() {
                 }`}
               />
             </button>
+            {notifications && (
+              <button
+                onClick={sendTestNotification}
+                className="text-xs text-slate-500 hover:text-slate-800 underline ml-1"
+              >
+                Send test
+              </button>
+            )}
           </div>
 
           {/* Data tools: export / import JSON */}
