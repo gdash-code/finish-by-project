@@ -1,0 +1,8 @@
+{
+  "name": "Finish By",
+  "description": "A sleek book-finishing companion that turns your reading goals into a tangible journey. Features a unique tactile 'crumpled paper' interface for a modern, focused experience.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
